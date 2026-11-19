@@ -1,0 +1,447 @@
+## Solution
+
+For this challenge, I followed the suggested
+solution from Chapter 25.
+
+I think Lox should create a separate captured
+variable for every iteration of a for loop.
+
+This behavior is useful because a closure created
+during one iteration should be able to remember
+the value from that particular iteration.
+
+If all closures share the same variable, they
+may instead observe its final value after the
+loop finishes.
+
+To implement the change, I would modify
+forStatement() in compiler.c to introduce a
+new local scope and a shadowing variable for
+each iteration.
+
+## 1. Understanding the Original Behavior
+
+Consider this Lox program:
+
+```lox
+var first = nil;
+var second = nil;
+
+fun main() {
+  for (var i = 1; i <= 2; i = i + 1) {
+    fun remember() {
+      print i;
+    }
+
+    if (first == nil) {
+      first = remember;
+    } else {
+      second = remember;
+    }
+  }
+}
+
+main();
+
+first();
+second();
+```
+
+In the original Chapter 25 implementation,
+the loop variable i is declared once.
+
+Both closures capture the same variable.
+
+The loop also increments i after the second
+iteration, so its final value is 3.
+
+Therefore, the original behavior is:
+
+```text
+3
+3
+```
+
+For my proposed design, I would prefer:
+
+```text
+1
+2
+```
+
+Each closure would capture a separate variable
+created during its own iteration.
+
+This would make the behavior more intuitive
+when closures are created inside loops.
+
+## 2. Create a Shadowing Variable for Each Iteration
+
+The suggested solution uses a new scope inside
+the loop body.
+
+The original loop variable continues to control
+the condition and increment expressions.
+
+However, each iteration gets a temporary local
+variable with the same name.
+
+The new variable begins with the current value
+of the original loop variable.
+
+When the compiler processes the loop body,
+references to that name resolve to the new
+inner variable instead of the original one.
+
+This means closures created during that
+iteration capture the temporary variable.
+
+At the end of the iteration, the compiler
+copies the temporary variable's value back
+to the original loop variable.
+
+This step is important because the loop body
+might modify the variable.
+
+Finally, the temporary scope is closed.
+
+If the temporary variable was captured by
+a closure, Chapter 25's existing upvalue
+mechanism preserves its value after the
+iteration finishes.
+
+## 3. Modify forStatement()
+
+The following proposed implementation follows
+the uploaded solution.
+
+In compiler.c:
+
+```c
+static void forStatement() {
+  beginScope();
+
+  // Track the loop variable's name and stack slot.
+  int loopVariable = -1;
+  Token loopVariableName;
+  loopVariableName.start = NULL;
+
+  consume(TOKEN_LEFT_PAREN,
+          "Expect '(' after 'for'.");
+
+  if (match(TOKEN_VAR)) {
+    // Remember the name of the declared variable.
+    loopVariableName = parser.current;
+
+    varDeclaration();
+
+    // Remember its local stack slot.
+    loopVariable = current->localCount - 1;
+
+  } else if (match(TOKEN_SEMICOLON)) {
+    // No initializer.
+
+  } else {
+    expressionStatement();
+  }
+
+  int loopStart = currentChunk()->count;
+
+  int exitJump = -1;
+
+  if (!match(TOKEN_SEMICOLON)) {
+    expression();
+
+    consume(TOKEN_SEMICOLON,
+            "Expect ';' after loop condition.");
+
+    exitJump = emitJump(OP_JUMP_IF_FALSE);
+    emitByte(OP_POP);
+  }
+
+  if (!match(TOKEN_RIGHT_PAREN)) {
+    int bodyJump = emitJump(OP_JUMP);
+
+    int incrementStart = currentChunk()->count;
+
+    expression();
+    emitByte(OP_POP);
+
+    consume(TOKEN_RIGHT_PAREN,
+            "Expect ')' after for clauses.");
+
+    emitLoop(loopStart);
+    loopStart = incrementStart;
+
+    patchJump(bodyJump);
+  }
+
+  // Create a separate variable for this iteration.
+  int innerVariable = -1;
+
+  if (loopVariable != -1) {
+    beginScope();
+
+    // Initialize the inner variable using the
+    // current value of the outer loop variable.
+    emitBytes(OP_GET_LOCAL, (uint8_t)loopVariable);
+
+    // Declare a variable with the same name.
+    addLocal(loopVariableName);
+    markInitialized();
+
+    innerVariable = current->localCount - 1;
+  }
+
+  // Compile the loop body.
+  statement();
+
+  if (loopVariable != -1) {
+    // Copy changes made in the body back to
+    // the original loop variable.
+    emitBytes(OP_GET_LOCAL, (uint8_t)innerVariable);
+    emitBytes(OP_SET_LOCAL, (uint8_t)loopVariable);
+    emitByte(OP_POP);
+
+    // Close the per-iteration variable.
+    endScope();
+  }
+
+  emitLoop(loopStart);
+
+  if (exitJump != -1) {
+    patchJump(exitJump);
+    emitByte(OP_POP);
+  }
+
+  endScope();
+}
+```
+
+## 4. Why Shadowing Works
+
+The compiler resolves local variables by
+searching the most recently declared locals
+first.
+
+When the new inner variable has the same
+name as the original loop variable, it
+shadows the original one.
+
+For example:
+
+```lox
+for (var i = 1; i <= 2; i = i + 1) {
+  fun show() {
+    print i;
+  }
+}
+```
+
+During the first iteration, the body uses
+a temporary variable initialized to 1.
+
+During the second iteration, it uses a
+new temporary variable initialized to 2.
+
+The closure from each iteration captures
+its own variable instead of capturing
+the original loop-control variable.
+
+This prevents the closures from all
+sharing the final value of i.
+
+## 5. Preserving Changes Made Inside the Loop
+
+A separate variable must not interfere
+with normal loop behavior.
+
+Consider:
+
+```lox
+for (var i = 0; i < 3; ) {
+  print i;
+  i = i + 1;
+}
+```
+
+Expected output:
+
+```text
+0
+1
+2
+```
+
+This loop has no increment clause.
+
+Instead, the body updates i directly.
+
+If the compiler only created a temporary
+shadowing variable without copying its
+value back, the original loop variable
+would remain zero.
+
+The loop condition would continue to
+evaluate using the unchanged value,
+potentially causing an infinite loop.
+
+The proposed solution avoids this by
+copying the inner variable's value
+back to the original loop variable
+before finishing the iteration.
+
+The original variable then controls
+the next condition or increment.
+
+## 6. Closing the Temporary Scope
+
+Chapter 25 introduces upvalues to allow
+closures to access local variables even
+after the declaring scope ends.
+
+When the temporary scope finishes,
+endScope() checks whether its local
+variable was captured.
+
+If the variable was not captured,
+the compiler can emit OP_POP.
+
+If the variable was captured,
+the compiler emits OP_CLOSE_UPVALUE.
+
+This moves the captured value into
+the upvalue object so the closure
+can continue accessing it.
+
+As a result, a closure can retain its
+iteration-specific variable even after
+the loop has moved on.
+
+## 7. Test 1: Two Different Captured Values
+
+```lox
+var first = nil;
+var second = nil;
+
+fun main() {
+  for (var i = 1; i <= 2; i = i + 1) {
+    fun remember() {
+      print i;
+    }
+
+    if (first == nil) {
+      first = remember;
+    } else {
+      second = remember;
+    }
+  }
+}
+
+main();
+
+first();
+second();
+```
+
+Expected output after the proposed change:
+
+```text
+1
+2
+```
+
+Each closure should retain the
+value associated with the iteration
+during which it was created.
+
+## 8. Test 2: Modifying the Loop Variable
+
+```lox
+for (var i = 0; i < 3; ) {
+  print i;
+  i = i + 1;
+}
+```
+
+Expected output:
+
+```text
+0
+1
+2
+```
+
+This verifies that modifications made
+to the shadowing variable are copied
+back into the original loop variable.
+
+## 9. Test 3: Ordinary Loop Behavior
+
+```lox
+for (var i = 0; i < 4; i = i + 1) {
+  print i;
+}
+```
+
+Expected output:
+
+```text
+0
+1
+2
+3
+```
+
+This verifies that an ordinary for loop
+still behaves as expected even when
+there are no closures in its body.
+
+## 10. Trade-Offs
+
+The main benefit of this approach is
+that closures created during different
+iterations retain independent variables.
+
+This can make programs easier to
+understand and help prevent confusing
+results when functions are created
+inside loops.
+
+The main disadvantage is that the
+compiler must generate additional
+instructions and manage an extra scope
+for each iteration of a for loop that
+declares a local variable.
+
+The implementation also needs to
+handle assignments to the loop variable
+correctly so the loop can still advance.
+
+Although the implementation becomes
+more complicated, I think the behavior
+is worth it because it is often what
+a programmer expects when capturing
+variables inside loops.
+
+## 11. Compatibility With Other Loop Features
+
+This implementation is based on the
+Chapter 25 version of forStatement().
+
+If the continue statement from
+Chapter 23's optional challenge has
+also been implemented, its compilation
+must be adjusted to account for the
+new per-iteration scope.
+
+A continue statement must preserve any
+required updates to the original loop
+variable and close captured temporary
+locals before jumping to the loop's
+increment or condition.
+
+Simply combining the two versions of
+forStatement() without coordinating
+their control-flow and scope handling
+may result in incorrect behavior.
