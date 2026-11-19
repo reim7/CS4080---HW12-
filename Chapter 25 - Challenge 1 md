@@ -1,0 +1,596 @@
+## Solution
+
+For this challenge, I followed the approach in
+the uploaded suggested solution.
+
+The main idea is to create an ObjClosure only
+when a function captures variables from its
+enclosing scope.
+
+In Chapter 25, the compiler already tracks the
+number of upvalues a function uses through:
+
+```c
+function->upvalueCount
+```
+
+An upvalue represents a variable captured from
+an enclosing function.
+
+If upvalueCount is greater than zero, the
+function needs a closure.
+
+If upvalueCount is zero, the function can
+potentially be used directly as an ObjFunction.
+
+This avoids creating an extra closure object
+for functions that do not capture anything.
+
+However, it also makes the VM more complicated
+because it must support two different types
+of callable Lox functions.
+
+## 1. Modify Function Compilation
+
+In the original Chapter 25 implementation,
+the compiler emits OP_CLOSURE for every
+function declaration.
+
+For this challenge, I would change the
+function() compiler helper so that it
+checks the function's upvalue count.
+
+In compiler.c, replace the code that emits
+the function object at the end of function()
+with:
+
+```c
+ObjFunction* function = endCompiler();
+
+uint8_t functionConstant =
+    makeConstant(OBJ_VAL(function));
+
+if (function->upvalueCount > 0) {
+  // The function captures surrounding variables.
+  emitBytes(OP_CLOSURE, functionConstant);
+
+  // Describe each captured variable.
+  for (int i = 0; i < function->upvalueCount; i++) {
+    emitByte(compiler.upvalues[i].isLocal ? 1 : 0);
+    emitByte(compiler.upvalues[i].index);
+  }
+} else {
+  // No captured variables are needed.
+  emitBytes(OP_CONSTANT, functionConstant);
+}
+```
+
+This creates two possible outcomes.
+
+If the function captures variables, the compiler
+generates OP_CLOSURE followed by the information
+needed to connect its upvalues.
+
+If the function does not capture variables,
+the compiler simply emits OP_CONSTANT.
+
+The VM can then load and use the function
+without allocating an ObjClosure.
+
+## 2. Update the CallFrame Structure
+
+In the original Chapter 25 implementation,
+each CallFrame stores a pointer to an ObjClosure.
+
+This works when all functions are wrapped,
+but it will no longer work after our change.
+
+A CallFrame might now represent either:
+
+- An ObjFunction that has no captured variables.
+- An ObjClosure that captures one or more variables.
+
+To support both, I would update CallFrame
+in vm.h:
+
+```c
+typedef struct {
+  Obj* function;
+  uint8_t* ip;
+  Value* slots;
+} CallFrame;
+```
+
+The function field now stores a pointer
+to the common Obj object header.
+
+Since Obj contains the object's type,
+the VM can determine whether it is
+working with an ordinary function
+or a closure.
+
+## 3. Add a Helper to Access the Function
+
+The VM still needs to access the underlying
+ObjFunction when retrieving bytecode,
+constants, and function information.
+
+Since a CallFrame may contain either
+type of callable object, I would add
+the following helper in vm.c:
+
+```c
+static inline ObjFunction* getFrameFunction(
+    CallFrame* frame) {
+  if (frame->function->type == OBJ_FUNCTION) {
+    return (ObjFunction*)frame->function;
+  } else {
+    return ((ObjClosure*)frame->function)->function;
+  }
+}
+```
+
+If the CallFrame contains an ObjFunction,
+the helper returns that function directly.
+
+If the CallFrame contains an ObjClosure,
+it retrieves the ObjFunction stored
+inside the closure.
+
+This adds a type check, but it also lets
+other parts of the VM use the same helper
+without duplicating the logic.
+
+## 4. Update Function Calls
+
+The VM's callValue() function must now
+accept both types of callable objects.
+
+In vm.c, update the relevant switch cases:
+
+```c
+case OBJ_CLOSURE:
+  return callClosure(AS_CLOSURE(callee), argCount);
+
+case OBJ_FUNCTION:
+  return callFunction(AS_FUNCTION(callee), argCount);
+```
+
+The native function case from Chapter 24
+should remain in callValue() as well.
+
+Instead of maintaining two completely
+separate implementations for ordinary
+functions and closures, I would use a
+shared helper.
+
+```c
+static bool call(Obj* callee,
+                 ObjFunction* function,
+                 int argCount) {
+  if (argCount != function->arity) {
+    runtimeError("Expected %d arguments but got %d.",
+                 function->arity, argCount);
+    return false;
+  }
+
+  if (vm.frameCount == FRAMES_MAX) {
+    runtimeError("Stack overflow.");
+    return false;
+  }
+
+  CallFrame* frame = &vm.frames[vm.frameCount++];
+
+  frame->function = callee;
+  frame->ip = function->chunk.code;
+  frame->slots = vm.stackTop - argCount - 1;
+
+  return true;
+}
+```
+
+Next, create a wrapper for closure calls:
+
+```c
+static bool callClosure(ObjClosure* closure,
+                        int argCount) {
+  return call((Obj*)closure,
+              closure->function,
+              argCount);
+}
+```
+
+And a wrapper for ordinary function calls:
+
+```c
+static bool callFunction(ObjFunction* function,
+                         int argCount) {
+  return call((Obj*)function,
+              function,
+              argCount);
+}
+```
+
+Both types of functions still share
+the same argument-count checks,
+call-frame allocation, and stack layout.
+
+The main difference is how the VM
+obtains the underlying function object.
+
+## 5. Update Bytecode and Constant Access
+
+In Chapter 25, the VM accesses constants
+through the ObjFunction owned by
+the current closure.
+
+Since an ordinary function might not
+have a closure, this access must change.
+
+In vm.c, the READ_CONSTANT macro can
+use the new helper:
+
+```c
+#define READ_CONSTANT() \
+  (getFrameFunction(frame)->chunk.constants.values[READ_BYTE()])
+```
+
+The helper returns the appropriate
+ObjFunction regardless of whether the
+current CallFrame contains an ordinary
+function or a closure.
+
+The other bytecode-reading macros can
+continue using the existing instruction
+pointer mechanism.
+
+## 6. Update Debugging and Stack Traces
+
+The VM also uses the current function
+to display executed instructions and
+report runtime errors.
+
+In runtimeError(), the original Chapter 25
+code accesses:
+
+```c
+ObjFunction* function = frame->closure->function;
+```
+
+I would replace it with:
+
+```c
+ObjFunction* function = getFrameFunction(frame);
+```
+
+This ensures that runtime errors still
+display the correct function name and
+source line for both callable types.
+
+The instruction tracing code must
+also retrieve the current chunk
+through getFrameFunction().
+
+For example:
+
+```c
+ObjFunction* function = getFrameFunction(frame);
+
+disassembleInstruction(
+    &function->chunk,
+    (int)(frame->ip - function->chunk.code));
+```
+
+If the instruction-pointer optimization
+from Chapter 24, Challenge 1 is also
+installed, this debug expression should
+use the cached local ip variable instead
+of frame->ip.
+
+## 7. Preserve Upvalue Access
+
+Only functions with captured variables
+will need to execute OP_GET_UPVALUE
+and OP_SET_UPVALUE.
+
+These functions are still wrapped
+in ObjClosure objects.
+
+Because CallFrame now stores an Obj*
+instead of a dedicated closure pointer,
+the VM must obtain the closure explicitly
+when accessing upvalues.
+
+For example, OP_GET_UPVALUE can use:
+
+```c
+case OP_GET_UPVALUE: {
+  uint8_t slot = READ_BYTE();
+
+  ObjClosure* closure =
+      (ObjClosure*)frame->function;
+
+  push(*closure->upvalues[slot]->location);
+  break;
+}
+```
+
+Similarly, OP_SET_UPVALUE can use:
+
+```c
+case OP_SET_UPVALUE: {
+  uint8_t slot = READ_BYTE();
+
+  ObjClosure* closure =
+      (ObjClosure*)frame->function;
+
+  *closure->upvalues[slot]->location = peek(0);
+  break;
+}
+```
+
+These instructions are only generated
+for functions with upvalues.
+
+The OP_CLOSURE instruction also needs to
+access the enclosing closure when an
+upvalue captures another upvalue.
+
+For that case, the VM should cast
+the current CallFrame's function field
+to ObjClosure before reading its
+upvalue array.
+
+These changes preserve the variable
+capture behavior introduced in Chapter 25.
+
+## 8. Update the Initial Script Function
+
+The compiler still returns an ObjFunction
+for the top-level script.
+
+Since the script itself does not need
+to capture enclosing local variables,
+it can be executed directly.
+
+In interpret(), after compiling the script,
+the setup can use:
+
+```c
+ObjFunction* function = compile(source);
+
+if (function == NULL) {
+  return INTERPRET_COMPILE_ERROR;
+}
+
+push(OBJ_VAL(function));
+callFunction(function, 0);
+
+return run();
+```
+
+The surrounding VM initialization and
+error handling remain unchanged.
+
+This avoids unnecessarily wrapping
+the script's function in an ObjClosure.
+
+## 9. Benchmark 1: Program Without Closures
+
+The first benchmark measures a program
+that does not capture variables.
+
+Recursive Fibonacci is useful because
+it involves many ordinary function calls.
+
+```lox
+fun fib(n) {
+  if (n < 2) return n;
+
+  return fib(n - 2) + fib(n - 1);
+}
+
+var start = clock();
+
+print fib(30);
+
+print clock() - start;
+```
+
+Expected Fibonacci result:
+
+```text
+832040
+```
+
+The last number printed by this program
+is the measured CPU time.
+
+The function fib() does not capture
+variables from an enclosing function.
+
+Under the proposed optimization,
+it should therefore be represented
+using ObjFunction without creating
+an additional ObjClosure.
+
+This test helps evaluate the overhead
+of supporting both callable types.
+
+## 10. Benchmark 2: Program That Creates Closures
+
+The second benchmark creates many functions
+and closures inside a loop.
+
+This is adapted from the uploaded
+suggested solution.
+
+```lox
+var start = clock();
+var sum = 0;
+
+for (var j = 0; j < 100000; j = j + 1) {
+  fun outer(a, b, c) {
+    fun inner() {
+      return a + b + c;
+    }
+
+    return inner;
+  }
+
+  var closure = outer(j, j, j);
+  sum = sum + closure();
+}
+
+print sum;
+print clock() - start;
+```
+
+In this example, outer() does not capture
+any variables from an enclosing function.
+
+However, inner() captures the parameters
+a, b, and c from outer().
+
+Under the proposed design:
+
+- outer() can be represented directly
+  using ObjFunction.
+- inner() needs an ObjClosure because
+  it captures three variables.
+
+This benchmark tests a situation
+where both types of function objects
+are used repeatedly.
+
+It also helps investigate the effects
+of avoiding unnecessary closure
+allocations.
+
+## 11. Benchmarking Method
+
+To compare the two implementations fairly,
+I would use:
+
+1. The original Chapter 25 implementation,
+   where every function gets an ObjClosure.
+
+2. The modified implementation, where
+   only functions with upvalues are wrapped.
+
+Both implementations should use the same
+compiler version, optimization settings,
+hardware, and benchmark inputs.
+
+Debug tracing should be disabled because
+it adds work that could interfere with
+execution-time measurements.
+
+Each benchmark should be run multiple
+times, with the results compared using
+a consistent measurement method.
+
+I would also include programs that
+frequently call closures without
+creating new closures each time.
+
+This is important because closure
+creation and closure invocation
+exercise different parts of the VM.
+
+## 12. Performance Analysis
+
+Avoiding unnecessary ObjClosure allocations
+could reduce work when executing function
+declarations that do not capture variables.
+
+However, the VM must now distinguish
+between ObjFunction and ObjClosure
+when processing function calls and
+retrieving bytecode information.
+
+This introduces additional conditional
+logic into the implementation.
+
+As a result, some workloads might
+benefit from the optimization,
+while others might not.
+
+A benchmark that repeatedly creates
+functions could behave differently
+from one that mostly calls functions
+created earlier.
+
+I have not run these benchmarks
+or collected timing measurements,
+so I cannot determine which version
+is faster or by how much.
+
+## 13. How Should the Benchmarks Be Weighted?
+
+I would not choose an implementation
+based on only one benchmark.
+
+Instead, I would consider how frequently
+each operation occurs in realistic
+Lox programs.
+
+For example, most ordinary programs
+may call functions far more often
+than they create new closures.
+
+If the optimization improves closure
+creation but makes every function call
+more complicated, that trade-off
+might not be worthwhile.
+
+On the other hand, if a program creates
+many functions dynamically, avoiding
+unnecessary allocations could be
+more valuable.
+
+I would give more weight to workloads
+that represent how the interpreter
+is actually expected to be used.
+
+I would also consider memory usage
+and implementation complexity,
+not just execution time.
+
+## 14. Is the Added Complexity Worth It?
+
+The main advantage of this approach
+is that functions without captured
+variables do not need an extra
+closure object.
+
+This could reduce memory allocations
+and simplify runtime representation
+for those functions.
+
+The disadvantage is that the VM
+can no longer assume every callable
+Lox function is an ObjClosure.
+
+Several parts of the interpreter
+must now handle two different
+function representations.
+
+This adds conditional logic and
+increases the amount of code
+that needs to be maintained.
+
+Personally, I think the optimization
+is interesting and worth testing,
+but I would not automatically choose
+it over the original design.
+
+The original Chapter 25 approach
+is simpler because every Lox
+function call follows the same path.
+
+Without measured performance results,
+I would lean toward keeping the
+simpler implementation unless
+benchmarking demonstrates a
+meaningful practical benefit.
