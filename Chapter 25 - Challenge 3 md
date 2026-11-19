@@ -1,0 +1,478 @@
+## Solution
+
+For this challenge, I followed the message-based
+closure implementation in the uploaded
+suggested solution.
+
+The idea is to represent each vector using
+a closure instead of a traditional object.
+
+A constructor function called vector(x, y)
+creates an inner function that captures
+the x and y coordinates.
+
+The constructor returns that inner function.
+
+Because closures remember variables from
+their surrounding scope, the coordinates
+remain accessible even after the
+constructor finishes executing.
+
+The returned closure acts like an object
+that responds to different messages.
+
+## 1. Create the Vector Constructor
+
+The constructor takes two arguments:
+
+- x: The horizontal coordinate.
+- y: The vertical coordinate.
+
+It returns a function that can access
+those coordinates.
+
+The implementation is:
+
+```lox
+fun vector(x, y) {
+  fun object(message) {
+    fun add(other) {
+      return vector(x + other("x"), y + other("y"));
+    }
+
+    if (message == "x") return x;
+    if (message == "y") return y;
+    if (message == "add") return add;
+
+    print "unknown message";
+  }
+
+  return object;
+}
+```
+
+The outer function receives x and y
+and creates a closure named object().
+
+The object() closure captures the x and y
+parameters from vector().
+
+Even after vector() returns, the closure
+can still access those captured variables.
+
+This is the main closure behavior
+introduced in Chapter 25.
+
+## 2. Access the Coordinates
+
+The returned closure accepts a string
+that identifies which coordinate or
+method the programmer wants to access.
+
+For example:
+
+```lox
+var a = vector(1, 2);
+
+print a("x");
+print a("y");
+```
+
+Expected output:
+
+```text
+1
+2
+```
+
+When the message is "x", the closure
+returns the captured x coordinate.
+
+When the message is "y", it returns
+the captured y coordinate.
+
+This is similar to accessing properties
+on an object, but it uses function calls
+instead of property syntax.
+
+For example, rather than writing:
+
+```text
+a.x
+```
+
+The program writes:
+
+```lox
+a("x")
+```
+
+The closure decides what to return
+based on the message it receives.
+
+## 3. Implement Vector Addition
+
+A two-dimensional vector can be
+represented mathematically as:
+
+```text
+(x, y)
+```
+
+Adding two vectors means adding
+their corresponding coordinates:
+
+```text
+(x1, y1) + (x2, y2)
+    = (x1 + x2, y1 + y2)
+```
+
+For example:
+
+```text
+(1, 2) + (3, 4) = (4, 6)
+```
+
+Inside the constructor, I define
+an add() function:
+
+```lox
+fun add(other) {
+  return vector(x + other("x"), y + other("y"));
+}
+```
+
+The add function captures the current
+vector's x and y coordinates.
+
+It accepts another vector as its argument.
+
+The other vector is also represented
+by a closure.
+
+Therefore, the function retrieves
+the second vector's coordinates using:
+
+```lox
+other("x")
+other("y")
+```
+
+It then adds the coordinates and
+passes the results to vector().
+
+This creates a new vector rather
+than modifying either original vector.
+
+## 4. Access the Addition Method
+
+The vector object provides access
+to its addition method through
+the "add" message:
+
+```lox
+if (message == "add") return add;
+```
+
+This returns the add function itself.
+
+To call that function, the program
+uses a second set of parentheses:
+
+```lox
+a("add")(b)
+```
+
+This expression works in two steps.
+
+First:
+
+```lox
+a("add")
+```
+
+Returns the add function belonging
+to vector a.
+
+Then:
+
+```lox
+a("add")(b)
+```
+
+Calls that returned function
+and passes vector b as its argument.
+
+The result is a new vector containing
+the sum of the coordinates.
+
+This works because functions are
+first-class values in Lox.
+
+## 5. Complete Lox Program
+
+The following is the complete program
+from the uploaded suggested solution.
+
+```lox
+// Represent a vector using a closure.
+fun vector(x, y) {
+
+  // This closure acts like an object.
+  fun object(message) {
+
+    // This function acts like an addition method.
+    fun add(other) {
+      return vector(x + other("x"), y + other("y"));
+    }
+
+    // Respond to messages.
+    if (message == "x") return x;
+    if (message == "y") return y;
+    if (message == "add") return add;
+
+    print "unknown message";
+  }
+
+  return object;
+}
+
+// Create two vectors.
+var a = vector(1, 2);
+var b = vector(3, 4);
+
+// Add the vectors to create a third.
+var c = a("add")(b);
+
+// Display the coordinates of the result.
+print c("x");
+print c("y");
+```
+
+Expected output:
+
+```text
+4
+6
+```
+
+The first vector is:
+
+```text
+a = (1, 2)
+```
+
+The second vector is:
+
+```text
+b = (3, 4)
+```
+
+After adding them:
+
+```text
+c = (4, 6)
+```
+
+This satisfies all three requirements
+of the challenge.
+
+## 6. Additional Example: Adding Negative Coordinates
+
+The vector implementation can also
+handle negative coordinates.
+
+Using the same constructor:
+
+```lox
+var a = vector(-2, 5);
+var b = vector(7, -3);
+
+var result = a("add")(b);
+
+print result("x");
+print result("y");
+```
+
+Expected output:
+
+```text
+5
+2
+```
+
+The calculation is:
+
+```text
+(-2, 5) + (7, -3) = (5, 2)
+```
+
+This demonstrates that the addition
+method works by combining corresponding
+coordinates.
+
+## 7. Additional Example: Chaining Vector Addition
+
+Because adding two vectors returns
+another vector, the result can be
+used in another addition.
+
+```lox
+var a = vector(1, 2);
+var b = vector(3, 4);
+var c = vector(5, 6);
+
+var result = a("add")(b)("add")(c);
+
+print result("x");
+print result("y");
+```
+
+Expected output:
+
+```text
+9
+12
+```
+
+The calculations are:
+
+```text
+(1, 2) + (3, 4) = (4, 6)
+
+(4, 6) + (5, 6) = (9, 12)
+```
+
+This shows that each result is a
+complete vector object represented
+by another closure.
+
+## 8. How Closures Replace Objects
+
+Traditional objects combine data
+with methods that operate on that data.
+
+In this implementation, the data
+is stored in the captured variables
+x and y.
+
+The behavior is provided through
+the functions object() and add().
+
+The object() function acts like
+a message dispatcher.
+
+It receives a message and determines
+whether to return a coordinate or
+a function representing a method.
+
+For example:
+
+```lox
+a("x")
+```
+
+Accesses data, while:
+
+```lox
+a("add")(b)
+```
+
+Calls a method.
+
+Although the syntax is different
+from ordinary object-oriented
+programming, the underlying idea
+is similar.
+
+The closure combines persistent
+state with operations that can
+access that state.
+
+## 9. Why the Captured Variables Remain Available
+
+Chapter 25 explains that closures
+capture variables from their
+enclosing lexical scopes.
+
+In clox, captured variables are
+represented through upvalues.
+
+When a captured local variable
+goes out of scope, its upvalue
+is closed so the value can
+remain accessible.
+
+For example:
+
+```lox
+var a = vector(1, 2);
+```
+
+The call to vector() finishes,
+but the returned object closure
+still needs access to x and y.
+
+The upvalue mechanism preserves
+these variables so that calls
+such as a("x") and a("y")
+continue working afterward.
+
+Without closures, the inner
+function would not be able
+to retain the coordinates
+after the constructor returned.
+
+## 10. Advantages and Limitations
+
+This approach has several advantages.
+
+First, it demonstrates that closures
+can preserve data and provide
+behavior similar to objects.
+
+Second, it allows the program
+to create multiple independent
+vectors, each with its own
+captured coordinates.
+
+Third, vector addition produces
+a new vector using the same
+constructor, making the design
+simple and reusable.
+
+However, there are also limitations.
+
+The message-based syntax is less
+convenient than ordinary property
+and method access.
+
+For example:
+
+```lox
+a("add")(b)
+```
+
+Is less familiar than a typical
+object-oriented expression such as:
+
+```text
+a.add(b)
+```
+
+The implementation also relies
+on string messages to determine
+which operation should execute.
+
+An unrecognized message currently
+prints an error message and
+implicitly returns nil.
+
+A more complete object system
+could provide clearer method
+lookup and error handling.
+
+Despite these limitations,
+the approach is effective for
+demonstrating how closures
+can simulate object behavior.
